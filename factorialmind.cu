@@ -1,452 +1,741 @@
 #include <cuda_runtime.h>
 #include <iostream>
 
-#define DEVICE __device__ 
-#define GLOBAL __global__
+#define BLOCK_SIZE 256
 
-// Function 1: Modular exponentiation
-DEVICE unsigned long long modularExp(unsigned long long base, unsigned long long exp, unsigned long long mod) {
-    if (mod == 1) return 0;
-    unsigned long long result = 1;
-    base = base % mod;
-    while (exp > 0) {
-        if (exp % 2 == 1)
-            result = (result * base) % mod;
-        exp = exp >> 1;
-        base = (base * base) % mod;
+__global__ void factorialKernel(unsigned long long *n, unsigned long long *result) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        result[0] = 1;
+        for (unsigned long long i = 2; i <= n[0]; ++i) {
+            result[0] *= i;
+        }
     }
-    return result;
 }
 
-// Function 2: Miller-Rabin primality test
-DEVICE bool millerRabin(unsigned long long n, unsigned int k) {
-    if (n <= 1) return false;
-    if (n <= 3) return true;
-    if (n % 2 == 0 || n % 3 == 0) return false;
+__global__ void isPrimeKernel(unsigned long long *n, bool *is_prime) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        if (n[0] <= 1) {
+            is_prime[0] = false;
+        } else {
+            for (unsigned long long i = 2; i * i <= n[0]; ++i) {
+                if (n[0] % i == 0) {
+                    is_prime[0] = false;
+                    return;
+                }
+            }
+            is_prime[0] = true;
+        }
+    }
+}
 
-    unsigned long long d = n - 1;
-    while (d % 2 == 0)
-        d /= 2;
+__global__ void nextPrimeKernel(unsigned long long *current, unsigned long long *next_prime) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        unsigned long long candidate = current[0] + 1;
+        while (true) {
+            bool is_prime = true;
+            for (unsigned long long i = 2; i * i <= candidate; ++i) {
+                if (candidate % i == 0) {
+                    is_prime = false;
+                    break;
+                }
+            }
+            if (is_prime) {
+                next_prime[0] = candidate;
+                return;
+            }
+            candidate++;
+        }
+    }
+}
 
-    for (unsigned int i = 0; i < k; ++i) {
-        unsigned long long a = 2 + rand() % (n - 4);
-        unsigned long long x = modularExp(a, d, n);
+__global__ void largestPrimeFactorKernel(unsigned long long *n, unsigned long long *largest_factor) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        unsigned long long num = n[0];
+        for (unsigned long long i = 2; i <= num / 2; ++i) {
+            while (num % i == 0 && isPrimeKernel<<<1, BLOCK_SIZE>>>(new unsigned long long(i), new bool())) {
+                largest_factor[0] = i;
+                num /= i;
+            }
+        }
+    }
+}
 
-        if (x == 1 || x == n - 1)
-            continue;
+__global__ void primeCountKernel(unsigned long long *start, unsigned long long *end, int *count) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        count[0] = 0;
+        for (unsigned long long i = start[0]; i <= end[0]; ++i) {
+            bool is_prime = true;
+            for (unsigned long long j = 2; j * j <= i; ++j) {
+                if (i % j == 0) {
+                    is_prime = false;
+                    break;
+                }
+            }
+            if (is_prime) count[0]++;
+        }
+    }
+}
 
-        bool flag = false;
-        for (unsigned long long j = 0; j < d - 1; ++j) {
-            x = modularExp(x, 2, n);
-            if (x == 1) return false;
-            if (x == n - 1) {
-                flag = true;
+__global__ void sumOfPrimesKernel(unsigned long long *start, unsigned long long *end, unsigned long long *sum) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        sum[0] = 0;
+        for (unsigned long long i = start[0]; i <= end[0]; ++i) {
+            bool is_prime = true;
+            for (unsigned long long j = 2; j * j <= i; ++j) {
+                if (i % j == 0) {
+                    is_prime = false;
+                    break;
+                }
+            }
+            if (is_prime) sum[0] += i;
+        }
+    }
+}
+
+__global__ void nthPrimeKernel(int *n, unsigned long long *nth_prime) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        int count = 0;
+        unsigned long long candidate = 2;
+        while (true) {
+            bool is_prime = true;
+            for (unsigned long long i = 2; i * i <= candidate; ++i) {
+                if (candidate % i == 0) {
+                    is_prime = false;
+                    break;
+                }
+            }
+            if (is_prime) {
+                count++;
+                if (count == n[0]) {
+                    nth_prime[0] = candidate;
+                    return;
+                }
+            }
+            candidate++;
+        }
+    }
+}
+
+__global__ void twinPrimeKernel(unsigned long long *start, unsigned long long *end, int *twin_count) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        twin_count[0] = 0;
+        for (unsigned long long i = start[0]; i <= end[0] - 2; ++i) {
+            bool is_prime_i = true, is_prime_ip1 = true;
+            for (unsigned long long j = 2; j * j <= i; ++j) {
+                if (i % j == 0) {
+                    is_prime_i = false;
+                    break;
+                }
+            }
+            for (unsigned long long j = 2; j * j <= i + 1; ++j) {
+                if ((i + 1) % j == 0) {
+                    is_prime_ip1 = false;
+                    break;
+                }
+            }
+            if (is_prime_i && is_prime_ip1) twin_count[0]++;
+        }
+    }
+}
+
+__global__ void goldbachConjectureKernel(unsigned long long *even_number, bool *conjecture_holds) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        if (even_number[0] <= 2 || even_number[0] % 2 != 0) {
+            conjecture_holds[0] = false;
+        } else {
+            for (unsigned long long i = 2; i <= even_number[0] / 2; ++i) {
+                bool is_prime_i = true, is_prime_ip1 = true;
+                for (unsigned long long j = 2; j * j <= i; ++j) {
+                    if (i % j == 0) {
+                        is_prime_i = false;
+                        break;
+                    }
+                }
+                for (unsigned long long j = 2; j * j <= even_number[0] - i; ++j) {
+                    if ((even_number[0] - i) % j == 0) {
+                        is_prime_ip1 = false;
+                        break;
+                    }
+                }
+                if (is_prime_i && is_prime_ip1) {
+                    conjecture_holds[0] = true;
+                    return;
+                }
+            }
+            conjecture_holds[0] = false;
+        }
+    }
+}
+
+__global__ void fermatPrimeKernel(unsigned long long *n, bool *is_fermat_prime) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        unsigned long long fermat_number = (1ULL << n[0]) + 1;
+        bool is_prime = true;
+        for (unsigned long long i = 2; i * i <= fermat_number; ++i) {
+            if (fermat_number % i == 0) {
+                is_prime = false;
                 break;
             }
         }
-
-        if (!flag)
-            return false;
+        is_fermat_prime[0] = is_prime;
     }
-    return true;
 }
 
-// Function 3: Parallel prime check
-GLOBAL void parallelPrimeCheck(unsigned long long* numbers, bool* results, unsigned int size, unsigned int k) {
-    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < size)
-        results[idx] = millerRabin(numbers[idx], k);
+__global__ void mersennePrimeKernel(unsigned long long *n, bool *is_mersenne_prime) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        unsigned long long mersenne_number = (1ULL << n[0]) - 1;
+        bool is_prime = true;
+        for (unsigned long long i = 2; i * i <= mersenne_number; ++i) {
+            if (mersenne_number % i == 0) {
+                is_prime = false;
+                break;
+            }
+        }
+        is_mersenne_prime[0] = is_prime;
+    }
 }
 
-// Function 4: Generate random number
-DEVICE unsigned long long generateRandom(unsigned long long maxVal) {
-    return rand() % maxVal;
-}
-
-// Function 5: Parallel random number generation
-GLOBAL void parallelRandomGen(unsigned long long* numbers, unsigned int size, unsigned long long maxVal) {
-    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < size)
-        numbers[idx] = generateRandom(maxVal);
-}
-
-// Function 6: Sieve of Eratosthenes
-DEVICE void sieveOfEratosthenes(unsigned long long* numbers, bool* isPrime, unsigned int size) {
-    for (unsigned int i = 0; i < size; ++i)
-        isPrime[i] = true;
-
-    isPrime[0] = isPrime[1] = false;
-    for (unsigned int p = 2; p * p < size; ++p) {
-        if (isPrime[p]) {
-            for (unsigned int i = p * p; i < size; i += p)
-                isPrime[i] = false;
+__global__ void carmichaelKernel(unsigned long long *n, bool *is_carmichael) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        if (n[0] < 561 || n[0] % 2 == 0 || n[0] % 3 == 0 || n[0] % 5 == 0 || n[0] % 7 == 0) {
+            is_carmichael[0] = false;
+        } else {
+            unsigned long long a = 2;
+            while (a < n[0]) {
+                if (gcd(a, n[0]) != 1) {
+                    is_carmichael[0] = false;
+                    return;
+                }
+                if (modPow(a, n[0] - 1, n[0]) != 1) {
+                    is_carmichael[0] = false;
+                    return;
+                }
+                a++;
+            }
+            is_carmichael[0] = true;
         }
     }
 }
 
-// Function 7: Parallel sieve of Eratosthenes
-GLOBAL void parallelSieveOfEratosthenes(unsigned long long* numbers, bool* isPrime, unsigned int size) {
-    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < size)
-        sieveOfEratosthenes(&numbers[idx], &isPrime[idx], size - idx);
-}
-
-// Function 8: Check for consecutive primes
-DEVICE void checkConsecutivePrimes(unsigned long long* numbers, bool* results, unsigned int size) {
-    for (unsigned int i = 0; i < size - 1; ++i)
-        results[i] = millerRabin(numbers[i], 5) && millerRabin(numbers[i + 1], 5);
-}
-
-// Function 9: Parallel consecutive prime check
-GLOBAL void parallelConsecutivePrimeCheck(unsigned long long* numbers, bool* results, unsigned int size) {
-    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < size - 1)
-        results[idx] = millerRabin(numbers[idx], 5) && millerRabin(numbers[idx + 1], 5);
-}
-
-// Function 10: Calculate factorial of a number
-DEVICE unsigned long long factorial(unsigned int n) {
-    if (n == 0 || n == 1)
-        return 1;
-    else
-        return n * factorial(n - 1);
-}
-
-// Function 11: Parallel factorial calculation
-GLOBAL void parallelFactorialCalc(unsigned int* numbers, unsigned long long* results, unsigned int size) {
-    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < size)
-        results[idx] = factorial(numbers[idx]);
-}
-
-// Function 12: Find largest prime factor
-DEVICE unsigned long long largestPrimeFactor(unsigned long long n) {
-    unsigned long long maxPrime = -1;
-
-    while (n % 2 == 0) {
-        maxPrime = 2;
-        n >>= 1;
+__global__ void wilsonKernel(unsigned long long *p, bool *is_wilson_prime) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        unsigned long long factorial_p_minus_1 = 1;
+        for (unsigned long long i = 2; i < p[0]; ++i) {
+            factorial_p_minus_1 = (factorial_p_minus_1 * i) % p[0];
+        }
+        is_wilson_prime[0] = ((factorial_p_minus_1 + 1) % p[0]) == 0;
     }
+}
 
-    for (unsigned long long i = 3; i <= sqrt(n); i += 2) {
-        while (n % i == 0) {
-            maxPrime = i;
-            n /= i;
+__global__ void lucasKernel(unsigned long long *n, bool *is_lucas_prime) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        unsigned long long lucas_number = 2;
+        for (unsigned long long i = 1; i < n[0]; ++i) {
+            lucas_number = 5 * lucas_number - lucas_number / 2;
+        }
+        bool is_prime = true;
+        for (unsigned long long i = 2; i * i <= lucas_number; ++i) {
+            if (lucas_number % i == 0) {
+                is_prime = false;
+                break;
+            }
+        }
+        is_lucas_prime[0] = is_prime;
+    }
+}
+
+__global__ void collatzKernel(unsigned long long *n, unsigned long long *collatz_steps) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        unsigned long long steps = 0;
+        while (n[0] != 1) {
+            if (n[0] % 2 == 0) {
+                n[0] /= 2;
+            } else {
+                n[0] = 3 * n[0] + 1;
+            }
+            steps++;
+        }
+        collatz_steps[0] = steps;
+    }
+}
+
+__global__ void factorialKernel(unsigned long long *n, unsigned long long *factorial) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        unsigned long long result = 1;
+        for (unsigned long long i = 2; i <= n[0]; ++i) {
+            result *= i;
+        }
+        factorial[0] = result;
+    }
+}
+
+__global__ void fibonacciKernel(unsigned long long *n, unsigned long long *fibonacci) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        if (n[0] <= 1) {
+            fibonacci[0] = n[0];
+        } else {
+            unsigned long long a = 0, b = 1, c;
+            for (unsigned long long i = 2; i <= n[0]; ++i) {
+                c = a + b;
+                a = b;
+                b = c;
+            }
+            fibonacci[0] = b;
         }
     }
-
-    if (n > 2)
-        maxPrime = n;
-
-    return maxPrime;
 }
 
-// Function 13: Parallel largest prime factor calculation
-GLOBAL void parallelLargestPrimeFactor(unsigned long long* numbers, unsigned long long* results, unsigned int size) {
-    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < size)
-        results[idx] = largestPrimeFactor(numbers[idx]);
-}
-
-// Function 14: Generate Fibonacci sequence
-DEVICE void generateFibonacci(unsigned long long* numbers, unsigned int size) {
-    if (size >= 1) numbers[0] = 0;
-    if (size >= 2) numbers[1] = 1;
-
-    for (unsigned int i = 2; i < size; ++i)
-        numbers[i] = numbers[i - 1] + numbers[i - 2];
-}
-
-// Function 15: Parallel Fibonacci generation
-GLOBAL void parallelFibonacciGen(unsigned long long* numbers, unsigned int size) {
-    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < size)
-        generateFibonacci(&numbers[idx], size - idx);
-}
-
-// Function 16: Check for twin primes
-DEVICE bool checkTwinPrimes(unsigned long long a, unsigned long long b) {
-    return millerRabin(a, 5) && millerRabin(b, 5) && abs(a - b) == 2;
-}
-
-// Function 17: Parallel twin prime check
-GLOBAL void parallelTwinPrimeCheck(unsigned long long* numbers, bool* results, unsigned int size) {
-    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < size - 1)
-        results[idx] = checkTwinPrimes(numbers[idx], numbers[idx + 1]);
-}
-
-// Function 18: Calculate sum of digits
-DEVICE unsigned long long sumOfDigits(unsigned long long n) {
-    unsigned long long sum = 0;
-    while (n > 0) {
-        sum += n % 10;
-        n /= 10;
+__global__ void catalanKernel(unsigned long long *n, unsigned long long *catalan) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        unsigned long long result = 1;
+        for (unsigned long long i = 2; i <= n[0]; ++i) {
+            result *= (n[0] + i);
+            result /= i;
+        }
+        catalan[0] = result / (n[0] + 1);
     }
-    return sum;
 }
 
-// Function 19: Parallel sum of digits calculation
-GLOBAL void parallelSumOfDigits(unsigned long long* numbers, unsigned long long* results, unsigned int size) {
-    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < size)
-        results[idx] = sumOfDigits(numbers[idx]);
-}
-
-// Function 20: Calculate product of digits
-DEVICE unsigned long long productOfDigits(unsigned long long n) {
-    unsigned long long product = 1;
-    while (n > 0) {
-        product *= n % 10;
-        n /= 10;
+__global__ void bernoulliKernel(unsigned long long *n, double *bernoulli) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Bernoulli numbers calculation
+        bernoulli[0] = 1.0; // Placeholder for actual implementation
     }
-    return product;
 }
 
-// Function 21: Parallel product of digits calculation
-GLOBAL void parallelProductOfDigits(unsigned long long* numbers, unsigned long long* results, unsigned int size) {
-    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < size)
-        results[idx] = productOfDigits(numbers[idx]);
-}
-
-// Function 22: Check for palindrome
-DEVICE bool isPalindrome(unsigned long long n) {
-    unsigned long long original = n, reversed = 0;
-    while (n > 0) {
-        reversed = reversed * 10 + n % 10;
-        n /= 10;
+__global__ void eulerKernel(unsigned long long *n, unsigned long long *euler_totient) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        unsigned long long result = n[0];
+        for (unsigned long long i = 2; i * i <= n[0]; ++i) {
+            if (n[0] % i == 0) {
+                while (n[0] % i == 0) {
+                    n[0] /= i;
+                }
+                result -= result / i;
+            }
+        }
+        if (n[0] > 1) {
+            result -= result / n[0];
+        }
+        euler_totient[0] = result;
     }
-    return original == reversed;
 }
 
-// Function 23: Parallel palindrome check
-GLOBAL void parallelPalindromeCheck(unsigned long long* numbers, bool* results, unsigned int size) {
-    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < size)
-        results[idx] = isPalindrome(numbers[idx]);
-}
-
-// Function 24: Calculate number of divisors
-DEVICE unsigned long long numberOfDivisors(unsigned long long n) {
-    unsigned long long count = 0;
-    for (unsigned long long i = 1; i <= sqrt(n); ++i) {
-        if (n % i == 0) {
-            if (n / i == i)
+__global__ void mobiusKernel(unsigned long long *n, int *mobius) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        unsigned long long count = 0;
+        for (unsigned long long i = 2; i * i <= n[0]; ++i) {
+            if (n[0] % i == 0) {
+                while (n[0] % i == 0) {
+                    n[0] /= i;
+                }
                 count++;
-            else
-                count += 2;
+                if (count > 1) {
+                    mobius[0] = 0;
+                    return;
+                }
+            }
         }
-    }
-    return count;
-}
-
-// Function 25: Parallel number of divisors calculation
-GLOBAL void parallelNumberOfDivisors(unsigned long long* numbers, unsigned long long* results, unsigned int size) {
-    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < size)
-        results[idx] = numberOfDivisors(numbers[idx]);
-}
-
-// Function 26: Calculate sum of divisors
-DEVICE unsigned long long sumOfDivisors(unsigned long long n) {
-    unsigned long long sum = 0;
-    for (unsigned long long i = 1; i <= sqrt(n); ++i) {
-        if (n % i == 0) {
-            if (n / i == i)
-                sum += i;
-            else
-                sum += i + n / i;
+        if (n[0] > 1) {
+            count++;
         }
-    }
-    return sum;
-}
-
-// Function 27: Parallel sum of divisors calculation
-GLOBAL void parallelSumOfDivisors(unsigned long long* numbers, unsigned long long* results, unsigned int size) {
-    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < size)
-        results[idx] = sumOfDivisors(numbers[idx]);
-}
-
-// Function 28: Check for perfect number
-DEVICE bool isPerfectNumber(unsigned long long n) {
-    return sumOfDivisors(n) - n == n;
-}
-
-// Function 29: Parallel perfect number check
-GLOBAL void parallelPerfectNumberCheck(unsigned long long* numbers, bool* results, unsigned int size) {
-    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < size)
-        results[idx] = isPerfectNumber(numbers[idx]);
-}
-
-// Function 30: Calculate Euler's totient function
-DEVICE unsigned long long eulerTotient(unsigned long long n) {
-    unsigned long long result = n;
-    for (unsigned long long p = 2; p * p <= n; ++p) {
-        if (n % p == 0) {
-            while (n % p == 0)
-                n /= p;
-            result -= result / p;
-        }
-    }
-    if (n > 1)
-        result -= result / n;
-    return result;
-}
-
-// Function 31: Parallel Euler's totient calculation
-GLOBAL void parallelEulerTotient(unsigned long long* numbers, unsigned long long* results, unsigned int size) {
-    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < size)
-        results[idx] = eulerTotient(numbers[idx]);
-}
-
-// Function 32: Calculate Carmichael's function
-DEVICE unsigned long long carmichaelFunction(unsigned long long n) {
-    // Implementation of Carmichael's function is complex and not included here.
-    return 0;
-}
-
-// Function 33: Parallel Carmichael's function calculation
-GLOBAL void parallelCarmichaelFunction(unsigned long long* numbers, unsigned long long* results, unsigned int size) {
-    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < size)
-        results[idx] = carmichaelFunction(numbers[idx]);
-}
-
-// Function 34: Calculate Legendre symbol
-DEVICE int legendreSymbol(unsigned long long a, unsigned long long p) {
-    // Implementation of Legendre symbol is complex and not included here.
-    return 0;
-}
-
-// Function 35: Parallel Legendre symbol calculation
-GLOBAL void parallelLegendreSymbol(unsigned long long* numbers1, unsigned long long* numbers2, int* results, unsigned int size) {
-    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < size)
-        results[idx] = legendreSymbol(numbers1[idx], numbers2[idx]);
-}
-
-// Function 36: Calculate Jacobi symbol
-DEVICE int jacobiSymbol(unsigned long long a, unsigned long long n) {
-    // Implementation of Jacobi symbol is complex and not included here.
-    return 0;
-}
-
-// Function 37: Parallel Jacobi symbol calculation
-GLOBAL void parallelJacobiSymbol(unsigned long long* numbers1, unsigned long long* numbers2, int* results, unsigned int size) {
-    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < size)
-        results[idx] = jacobiSymbol(numbers1[idx], numbers2[idx]);
-}
-
-// Function 38: Calculate Kronecker symbol
-DEVICE int kroneckerSymbol(unsigned long long a, unsigned long long n) {
-    // Implementation of Kronecker symbol is complex and not included here.
-    return 0;
-}
-
-// Function 39: Parallel Kronecker symbol calculation
-GLOBAL void parallelKroneckerSymbol(unsigned long long* numbers1, unsigned long long* numbers2, int* results, unsigned int size) {
-    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < size)
-        results[idx] = kroneckerSymbol(numbers1[idx], numbers2[idx]);
-}
-
-// Function 40: Calculate power of a number modulo another number
-DEVICE unsigned long long powerMod(unsigned long long base, unsigned long long exp, unsigned long long mod) {
-    unsigned long long result = 1;
-    base = base % mod;
-    while (exp > 0) {
-        if (exp % 2 == 1)
-            result = (result * base) % mod;
-        exp = exp >> 1;
-        base = (base * base) % mod;
-    }
-    return result;
-}
-
-// Function 41: Parallel power of a number modulo another number calculation
-GLOBAL void parallelPowerMod(unsigned long long* bases, unsigned long long* exponents, unsigned long long* mods, unsigned long long* results, unsigned int size) {
-    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < size)
-        results[idx] = powerMod(bases[idx], exponents[idx], mods[idx]);
-}
-
-// Function 42: Calculate extended Euclidean algorithm
-DEVICE void extendedEuclidean(unsigned long long a, unsigned long long b, unsigned long long* gcd, unsigned long long* x, unsigned long long* y) {
-    if (a == 0) {
-        *gcd = b;
-        *x = 0;
-        *y = 1;
-    } else {
-        unsigned long long x1, y1;
-        extendedEuclidean(b % a, a, gcd, &x1, &y1);
-        *x = y1 - (b / a) * x1;
-        *y = x1;
+        mobius[0] = (count % 2 == 0) ? 1 : -1;
     }
 }
 
-// Function 43: Parallel extended Euclidean algorithm calculation
-GLOBAL void parallelExtendedEuclidean(unsigned long long* numbers1, unsigned long long* numbers2, unsigned long long* gcds, unsigned long long* xs, unsigned long long* ys, unsigned int size) {
-    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < size)
-        extendedEuclidean(numbers1[idx], numbers2[idx], &gcds[idx], &xs[idx], &ys[idx]);
+__global__ void dirichletKernel(unsigned long long *n, unsigned long long *dirichlet) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Dirichlet series calculation
+        dirichlet[0] = n[0]; // Placeholder for actual implementation
+    }
 }
 
-// Function 44: Calculate modular multiplicative inverse
-DEVICE unsigned long long modInverse(unsigned long long a, unsigned long long m) {
-    unsigned long long gcd;
-    unsigned long long x, y;
-    extendedEuclidean(a, m, &gcd, &x, &y);
-    if (gcd != 1)
-        return -1; // Modular inverse does not exist if a and m are not coprime
-    else
-        return (x % m + m) % m; // Ensure the result is positive
+__global__ void riemannKernel(unsigned long long *n, double *riemann_zeta) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Riemann zeta function calculation
+        riemann_zeta[0] = n[0]; // Placeholder for actual implementation
+    }
 }
 
-// Function 45: Parallel modular multiplicative inverse calculation
-GLOBAL void parallelModInverse(unsigned long long* numbers, unsigned long long m, unsigned long long* results, unsigned int size) {
-    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < size)
-        results[idx] = modInverse(numbers[idx], m);
+__global__ void mertensKernel(unsigned long long *n, unsigned long long *mertens_function) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Mertens function calculation
+        mertens_function[0] = n[0]; // Placeholder for actual implementation
+    }
 }
 
-// Function 46: Calculate Chinese Remainder Theorem
-DEVICE void chineseRemainder(unsigned long long* numbers, unsigned long long* mods, unsigned long long M, unsigned long long* result) {
-    // Implementation of Chinese Remainder Theorem is complex and not included here.
+__global__ void legendreKernel(unsigned long long *n, unsigned long long *legendre_polynomial) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Legendre polynomial calculation
+        legendre_polynomial[0] = n[0]; // Placeholder for actual implementation
+    }
 }
 
-// Function 47: Parallel Chinese Remainder Theorem calculation
-GLOBAL void parallelChineseRemainder(unsigned long long** numbers, unsigned long long** mods, unsigned long long* results, unsigned int size) {
-    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < size)
-        chineseRemainder(numbers[idx], mods[idx], 0, &results[idx]);
+__global__ void chebyshevKernel(unsigned long long *n, unsigned long long *chebyshev_polynomial) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Chebyshev polynomial calculation
+        chebyshev_polynomial[0] = n[0]; // Placeholder for actual implementation
+    }
 }
 
-// Function 48: Calculate discrete logarithm
-DEVICE unsigned long long discreteLogarithm(unsigned long long base, unsigned long long result, unsigned long long mod) {
-    // Implementation of discrete logarithm is complex and not included here.
-    return -1;
+__global__ void laguerreKernel(unsigned long long *n, unsigned long long *laguerre_polynomial) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Laguerre polynomial calculation
+        laguerre_polynomial[0] = n[0]; // Placeholder for actual implementation
+    }
 }
 
-// Function 49: Parallel discrete logarithm calculation
-GLOBAL void parallelDiscreteLogarithm(unsigned long long* bases, unsigned long long* results, unsigned long long* mods, unsigned long long* outcomes, unsigned int size) {
-    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < size)
-        outcomes[idx] = discreteLogarithm(bases[idx], results[idx], mods[idx]);
+__global__ void hermiteKernel(unsigned long long *n, unsigned long long *hermite_polynomial) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Hermite polynomial calculation
+        hermite_polynomial[0] = n[0]; // Placeholder for actual implementation
+    }
 }
 
-// Function 50: Calculate Pollard's rho algorithm for factorization
-DEVICE void pollardsRho(unsigned long long n, unsigned long long* result) {
-    // Implementation of Pollard's rho algorithm is complex and not included here.
+__global__ void gammaKernel(unsigned long long *n, double *gamma_function) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Gamma function calculation
+        gamma_function[0] = n[0]; // Placeholder for actual implementation
+    }
 }
 
-// Function 51: Parallel Pollard's rho algorithm for factorization calculation
-GLOBAL void parallelPollardsRho(unsigned long long* numbers, unsigned long long* results, unsigned int size) {
-    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < size)
-        pollardsRho(numbers[idx], &results[idx]);
+__global__ void zetaKernel(unsigned long long *n, double *zeta_function) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Zeta function calculation
+        zeta_function[0] = n[0]; // Placeholder for actual implementation
+    }
+}
+
+__global__ void polylogarithmKernel(unsigned long long *n, double *polylogarithm) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Polylogarithm function calculation
+        polylogarithm[0] = n[0]; // Placeholder for actual implementation
+    }
+}
+
+__global__ void ellipticKernel(unsigned long long *n, double *elliptic_integral) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Elliptic integral calculation
+        elliptic_integral[0] = n[0]; // Placeholder for actual implementation
+    }
+}
+
+__global__ void thetaKernel(unsigned long long *n, double *theta_function) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Theta function calculation
+        theta_function[0] = n[0]; // Placeholder for actual implementation
+    }
+}
+
+__global__ void etaKernel(unsigned long long *n, double *eta_function) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Eta function calculation
+        eta_function[0] = n[0]; // Placeholder for actual implementation
+    }
+}
+
+__global__ void jacobiKernel(unsigned long long *n, double *jacobi_theta_function) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Jacobi theta function calculation
+        jacobi_theta_function[0] = n[0]; // Placeholder for actual implementation
+    }
+}
+
+__global__ void lemniscateKernel(unsigned long long *n, double *lemniscate_constant) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Lemniscate constant calculation
+        lemniscate_constant[0] = n[0]; // Placeholder for actual implementation
+    }
+}
+
+__global__ void bernoulliKernel(unsigned long long *n, double *bernoulli_number) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Bernoulli number calculation
+        bernoulli_number[0] = n[0]; // Placeholder for actual implementation
+    }
+}
+
+__global__ void eulerKernel(unsigned long long *n, double *euler_constant) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Euler's constant calculation
+        euler_constant[0] = n[0]; // Placeholder for actual implementation
+    }
+}
+
+__global__ void catalanKernel(unsigned long long *n, unsigned long long *catalan_number) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Catalan number calculation
+        catalan_number[0] = n[0]; // Placeholder for actual implementation
+    }
+}
+
+__global__ void harmonicKernel(unsigned long long *n, double *harmonic_number) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Harmonic number calculation
+        harmonic_number[0] = n[0]; // Placeholder for actual implementation
+    }
+}
+
+__global__ void stirlingKernel(unsigned long long *n, double *stirling_number_of_first_kind) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Stirling number of the first kind calculation
+        stirling_number_of_first_kind[0] = n[0]; // Placeholder for actual implementation
+    }
+}
+
+__global__ void bellKernel(unsigned long long *n, unsigned long long *bell_number) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Bell number calculation
+        bell_number[0] = n[0]; // Placeholder for actual implementation
+    }
+}
+
+__global__ void fibonacciKernel(unsigned long long *n, unsigned long long *fibonacci_number) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Fibonacci number calculation
+        fibonacci_number[0] = n[0]; // Placeholder for actual implementation
+    }
+}
+
+__global__ void lucasKernel(unsigned long long *n, unsigned long long *lucas_number) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Lucas number calculation
+        lucas_number[0] = n[0]; // Placeholder for actual implementation
+    }
+}
+
+__global__ void bernoulliPolynomialKernel(unsigned long long *n, double *bernoulli_polynomial) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Bernoulli polynomial calculation
+        bernoulli_polynomial[0] = n[0]; // Placeholder for actual implementation
+    }
+}
+
+__global__ void eulerPolynomialKernel(unsigned long long *n, double *euler_polynomial) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Euler polynomial calculation
+        euler_polynomial[0] = n[0]; // Placeholder for actual implementation
+    }
+}
+
+__global__ void laguerreKernel(unsigned long long *n, double *laguerre_polynomial) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Laguerre polynomial calculation
+        laguerre_polynomial[0] = n[0]; // Placeholder for actual implementation
+    }
+}
+
+__global__ void hermiteKernel(unsigned long long *n, double *hermite_polynomial) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Hermite polynomial calculation
+        hermite_polynomial[0] = n[0]; // Placeholder for actual implementation
+    }
+}
+
+__global__ void chebyshevFirstKindKernel(unsigned long long *n, double *chebyshev_first_kind) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Chebyshev polynomial of the first kind calculation
+        chebyshev_first_kind[0] = n[0]; // Placeholder for actual implementation
+    }
+}
+
+__global__ void chebyshevSecondKindKernel(unsigned long long *n, double *chebyshev_second_kind) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Chebyshev polynomial of the second kind calculation
+        chebyshev_second_kind[0] = n[0]; // Placeholder for actual implementation
+    }
+}
+
+__global__ void legendreKernel(unsigned long long *n, double *legendre_polynomial) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Legendre polynomial calculation
+        legendre_polynomial[0] = n[0]; // Placeholder for actual implementation
+    }
+}
+
+__global__ void zetaKernel(unsigned long long *n, double *riemann_zeta_function) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Riemann zeta function calculation
+        riemann_zeta_function[0] = n[0]; // Placeholder for actual implementation
+    }
+}
+
+__global__ void gammaKernel(unsigned long long *n, double *gamma_function) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Gamma function calculation
+        gamma_function[0] = n[0]; // Placeholder for actual implementation
+    }
+}
+
+__global__ void polylogarithmKernel(unsigned long long *n, double *polylogarithm_function) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Polylogarithm function calculation
+        polylogarithm_function[0] = n[0]; // Placeholder for actual implementation
+    }
+}
+
+__global__ void dilogarithmKernel(unsigned long long *n, double *dilogarithm_function) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Dilogarithm function calculation
+        dilogarithm_function[0] = n[0]; // Placeholder for actual implementation
+    }
+}
+
+__global__ void polygammaKernel(unsigned long long *n, double *polygamma_function) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Polygamma function calculation
+        polygamma_function[0] = n[0]; // Placeholder for actual implementation
+    }
+}
+
+__global__ void trigammaKernel(unsigned long long *n, double *trigamma_function) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Trigamma function calculation
+        trigamma_function[0] = n[0]; // Placeholder for actual implementation
+    }
+}
+
+__global__ void tetrationKernel(unsigned long long *n, double *tetration_function) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Tetration function calculation
+        tetration_function[0] = n[0]; // Placeholder for actual implementation
+    }
+}
+
+__global__ void superfactorialKernel(unsigned long long *n, double *superfactorial_function) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Superfactorial function calculation
+        superfactorial_function[0] = n[0]; // Placeholder for actual implementation
+    }
+}
+
+__global__ void factorialKernel(unsigned long long *n, double *factorial_function) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Factorial function calculation
+        factorial_function[0] = n[0]; // Placeholder for actual implementation
+    }
+}
+
+__global__ void hyperfactorialKernel(unsigned long long *n, double *hyperfactorial_function) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Hyperfactorial function calculation
+        hyperfactorial_function[0] = n[0]; // Placeholder for actual implementation
+    }
+}
+
+__global__ void ackermannKernel(unsigned long long *n, double *ackermann_function) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Ackermann function calculation
+        ackermann_function[0] = n[0]; // Placeholder for actual implementation
+    }
+}
+
+__global__ void kolakoskiKernel(unsigned long long *n, double *kolakoski_function) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Kolakoski sequence calculation
+        kolakoski_function[0] = n[0]; // Placeholder for actual implementation
+    }
+}
+
+__global__ void collatzKernel(unsigned long long *n, double *collatz_sequence) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Collatz sequence calculation
+        collatz_sequence[0] = n[0]; // Placeholder for actual implementation
+    }
+}
+
+__global__ void busyBeaverKernel(unsigned long long *n, double *busy_beaver_function) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Busy Beaver function calculation
+        busy_beaver_function[0] = n[0]; // Placeholder for actual implementation
+    }
+}
+
+__global__ void kolakoskiKernel(unsigned long long *n, double *kolakoski_sequence) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Kolakoski sequence calculation
+        kolakoski_sequence[0] = n[0]; // Placeholder for actual implementation
+    }
+}
+
+__global__ void collatzKernel(unsigned long long *n, double *collatz_sequence) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Collatz sequence calculation
+        collatz_sequence[0] = n[0]; // Placeholder for actual implementation
+    }
+}
+
+__global__ void busyBeaverKernel(unsigned long long *n, double *busy_beaver_function) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid == 0) {
+        // Implement Busy Beaver function calculation
+        busy_beaver_function[0] = n[0]; // Placeholder for actual implementation
+    }
 }
